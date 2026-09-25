@@ -12,6 +12,12 @@ export class SceneManager {
   private scoresEl = document.getElementById("scores")!;
   private scores = new Map<string, number>();
 
+  // Latest transforms received from the server (20Hz) — meshes lerp toward
+  // these every render frame (60fps) instead of snapping on each update.
+  private vehicleTargets = new Map<string, { x: number; y: number; z: number; rotY: number }>();
+  private packageTargets = new Map<string, { x: number; y: number; z: number }>();
+  private static readonly LERP_RATE = 15; // higher = snappier, lower = smoother
+
   constructor() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x87ceeb);
@@ -74,17 +80,18 @@ export class SceneManager {
       const ws = new THREE.Mesh(wsGeo, wsMat);
       ws.position.set(0, 0.7, -1.1);
       mesh.add(ws);
+      mesh.position.set(x, y + 0.5, z);
+      mesh.rotation.y = rotY;
       this.scene.add(mesh);
       this.vehicles.set(sessionId, mesh);
     }
-    const v = this.vehicles.get(sessionId)!;
-    v.position.set(x, y + 0.5, z);
-    v.rotation.y = rotY;
+    this.vehicleTargets.set(sessionId, { x, y, z, rotY });
   }
 
   removeVehicle(sessionId: string) {
     const mesh = this.vehicles.get(sessionId);
     if (mesh) { this.scene.remove(mesh); this.vehicles.delete(sessionId); }
+    this.vehicleTargets.delete(sessionId);
     this.scores.delete(sessionId);
     this.renderScores();
   }
@@ -93,6 +100,7 @@ export class SceneManager {
     if (pickedUp) {
       const mesh = this.packages.get(id);
       if (mesh) { mesh.visible = false; }
+      this.packageTargets.delete(id);
       return;
     }
     if (!this.packages.has(id)) {
@@ -100,17 +108,20 @@ export class SceneManager {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffc107 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
+      mesh.position.set(x, y + 0.5, z);
       this.scene.add(mesh);
       this.packages.set(id, mesh);
     }
     const mesh = this.packages.get(id)!;
+    if (!mesh.visible) mesh.position.set(x, y + 0.5, z); // reappearing after a drop — snap, don't slide in
     mesh.visible = true;
-    mesh.position.set(x, y + 0.5, z);
+    this.packageTargets.set(id, { x, y, z });
   }
 
   removePackage(id: string) {
     const mesh = this.packages.get(id);
     if (mesh) { this.scene.remove(mesh); this.packages.delete(id); }
+    this.packageTargets.delete(id);
   }
 
   upsertDeliveryPoint(id: string, x: number, z: number) {
@@ -155,5 +166,30 @@ export class SceneManager {
 
   getPlayerPositions(): THREE.Vector3[] {
     return Array.from(this.vehicles.values()).map((v) => v.position);
+  }
+
+  // Called every render frame to smoothly move meshes toward the latest
+  // server-reported transform, decoupling render rate from the 20Hz network tick.
+  interpolate(dtSeconds: number) {
+    const t = 1 - Math.exp(-SceneManager.LERP_RATE * dtSeconds);
+
+    this.vehicleTargets.forEach((target, id) => {
+      const mesh = this.vehicles.get(id);
+      if (!mesh) return;
+      mesh.position.x += (target.x - mesh.position.x) * t;
+      mesh.position.y += (target.y + 0.5 - mesh.position.y) * t;
+      mesh.position.z += (target.z - mesh.position.z) * t;
+
+      const diff = Math.atan2(Math.sin(target.rotY - mesh.rotation.y), Math.cos(target.rotY - mesh.rotation.y));
+      mesh.rotation.y += diff * t;
+    });
+
+    this.packageTargets.forEach((target, id) => {
+      const mesh = this.packages.get(id);
+      if (!mesh) return;
+      mesh.position.x += (target.x - mesh.position.x) * t;
+      mesh.position.y += (target.y + 0.5 - mesh.position.y) * t;
+      mesh.position.z += (target.z - mesh.position.z) * t;
+    });
   }
 }

@@ -58,12 +58,17 @@ async function main() {
     lastAction = action;
   }, 1000 / 20);
 
-  function animate() {
+  let lastFrameTime = performance.now();
+  function animate(now: number) {
     requestAnimationFrame(animate);
+    const dt = Math.min((now - lastFrameTime) / 1000, 0.1); // clamp to avoid a big jump after e.g. tab refocus
+    lastFrameTime = now;
+
+    scene.interpolate(dt);
     camera.update(scene.getPlayerPositions());
     renderer.render(scene.scene, camera.camera);
   }
-  animate();
+  requestAnimationFrame(animate);
 }
 
 main().catch(console.error);
